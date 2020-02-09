@@ -89,11 +89,17 @@ class VCardWrapper:
                       "modem", "pager", "pcs", "video", "voice", "work")
     email_types_v3 = ("home", "internet", "work", "x400")
     address_types_v3 = ("dom", "intl", "home", "parcel", "postal", "work")
+    related_types_v3 = () # not a v3 field
     # vcard v4.0 supports the following type values
     phone_types_v4 = ("text", "voice", "fax", "cell", "video", "pager",
                       "textphone", "home", "work")
     email_types_v4 = ("home", "internet", "work")
     address_types_v4 = ("home", "work")
+    related_types_v4 = ("contact", "acquaintance", "friend", "met",
+                        "co-worker", "colleague", "co-resident",
+                        "neighbor", "child", "parent", "sibling",
+                        "spouse", "kin", "muse", "crush", "date",
+                        "sweetheart", "me", "agent", "emergency")
 
     def __init__(self, vcard, version=None):
         """Initialize the wrapper around the given vcard.
@@ -916,6 +922,58 @@ class VCardWrapper:
             label_obj.group = group_name
             label_obj.value = custom_types[0]
 
+    @property
+    def relateds(self):
+        """
+        :returns: dict of type list of relations, each relation has a
+        value (text|uri) and the contents
+        :rtype: dict(str, list(tuple(str,str)))
+        """
+        related_dict = {}
+        for child in self.vcard.getChildren():
+            if child.name == "RELATED":
+                type = helpers.list_to_string(
+                    self._get_types_for_vcard_object(child, "contact"), ", ")
+                if type not in related_dict:
+                    related_dict[type] = []
+                uri_text = child.params.get("VALUE")
+                related_dict[type].append((uri_text, child.value))
+        # sort email address lists
+        for related_list in related_dict.values():
+            related_list.sort()
+        return related_dict
+
+    def add_related(self, type, value, data):
+        if self.version == "3.0":
+            raise ValueError("Error: cannot add a related entity " + value +
+                             " to vCard 3.0.")
+        standard_types, custom_types, pref = self._parse_type_value(
+            helpers.string_to_list(type, ","), self.related_types_v4)
+        if not standard_types and not custom_types and pref == 0:
+            raise ValueError("Error: label for related entity " + value +
+                             " is missing.")
+        if len(custom_types) > 1:
+            raise ValueError("Error: related entity " + value + " got more "
+                             "than one custom label: " +
+                             helpers.list_to_string(custom_types, ", "))
+        related_obj = self.vcard.add('related')
+        related_obj.params['VALUE'] = value
+        related_obj.value = convert_to_vcard("related", data,
+                                             ObjectType.string)
+        if standard_types:
+            related.params['TYPE'] = standard_types
+        if custom_types:
+            custom_label_count = 0
+            for label in self.vcard.getChildren():
+                if label.name == "X-ABLABEL" and label.group.startswith(
+                        "itememail"):
+                    custom_label_count += 1
+            group_name = "itememail{}".format(custom_label_count + 1)
+            email_obj.group = group_name
+            label_obj = self.vcard.add('x-ablabel')
+            label_obj.group = group_name
+            label_obj.value = custom_types[0]
+
 
 class YAMLEditable(VCardWrapper):
     """Conversion of vcards to YAML and updateing the vcard from YAML"""
@@ -1644,7 +1702,7 @@ class CarddavObject(YAMLEditable):
 
         # misc stuff
         if self.categories or self.webpages or self.notes or (
-                show_uid and self.uid):
+                show_uid and self.uid or self.relateds):
             strings.append("Miscellaneous")
             if show_uid and self.uid:
                 strings.append("    UID: {}".format(self.uid))
@@ -1657,6 +1715,11 @@ class CarddavObject(YAMLEditable):
             if self.notes:
                 strings += helpers.convert_to_yaml(
                     "Note", self.notes, 4, -1, False)
+            if self.relateds:
+                for type in self.relateds:
+                    for relative in self.relateds[type]:
+                        strings += helpers.convert_to_yaml(
+                            type, relative[1], 4, -1, False)
         return '\n'.join(strings)
 
     def write_to_file(self, overwrite=False):
